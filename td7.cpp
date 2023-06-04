@@ -1,0 +1,298 @@
+#define _CRT_SECURE_NO_WARNINGS 1
+#include <vector>
+#include <algorithm>
+#include <cmath>
+#include <limits>
+#include <iostream>
+#include <chrono>
+#include "Vector.cpp"
+
+#include "lbfgs.c"
+
+
+// if the Polygon class name conflicts with a class in wingdi.h on Windows, use a namespace or change the name
+class Polygon {  
+public:
+    double area() const {
+        //slide 9 
+        if (vertices.size()<3) return 0; // not a polygon (not enough vertices)
+        double result = 0;
+        for (int i=0; i< vertices.size(); i++){
+            const Vector &A = vertices[i];
+            const Vector &B = vertices[(i+1)%vertices.size()];
+            result += A[0]*B[1] - A[1]*B[0];
+        }
+        return std::abs(result/2);
+    }
+
+    double integrate_squared_distance(const Vector& P) const {
+        if (vertices.size()<3) return 0; // not a polygon (not enough vertices)
+        //slide 34
+        double value =0; 
+        for(int i = 1; i<vertices.size()-1;i++){
+            Vector triangle[3] = {vertices[0], vertices[i], vertices[i+1]};
+            double local_value = 0; 
+            for (int k = 0; k<3; k++){
+                for (int l =k; l<3; l++){
+                    local_value += dot(triangle[k]-P, triangle[l]-P);
+                }
+            }
+            Vector e1= triangle[1]-triangle[0] ; 
+            Vector e2= triangle[2]-triangle[0];
+
+            double area_triangle = 0.5 * abs(e1[1]*e2[0] - e1[0]*e2[1]);
+            value += local_value*area_triangle/6.;
+        }
+        return value; 
+    }
+
+    std::vector<Vector> vertices;
+};  
+ 
+// saves a static svg file. The polygon vertices are supposed to be in the range [0..1], and a canvas of size 1000x1000 is created
+void save_svg(const std::vector<Polygon> &polygons, std::string filename, std::string fillcol = "none") {
+    FILE* f = fopen(filename.c_str(), "w+"); 
+    fprintf(f, "<svg xmlns = \"http://www.w3.org/2000/svg\" width = \"1000\" height = \"1000\">\n");
+    for (int i=0; i<polygons.size(); i++) {
+        fprintf(f, "<g>\n");
+        fprintf(f, "<polygon points = \""); 
+        for (int j = 0; j < polygons[i].vertices.size(); j++) {
+            fprintf(f, "%3.3f, %3.3f ", (polygons[i].vertices[j][0] * 1000), (1000 - polygons[i].vertices[j][1] * 1000));
+        }
+        fprintf(f, "\"\nfill = \"%s\" stroke-width =\"5\" stroke = \"black\"/>\n", fillcol.c_str());
+        fprintf(f, "</g>\n");
+    }
+    fprintf(f, "</svg>\n");
+    fclose(f);
+}
+
+class PowerDiagram{
+public: 
+    PowerDiagram(){};
+    PowerDiagram(const std::vector<Vector>& pts, const std::vector<double> &weights){
+        points = pts; 
+        this->weights = weights;
+    };
+
+    Polygon clip_polygon_by_bissector(const Polygon& poly,int index_0, int index_i, const Vector& P0, const Vector& Pi){
+        //Sutherland Hodgman algorithm 
+        // to check if its inside outside or in between 
+
+        Vector M = (P0+Pi)*0.5;
+        Vector Mprime = M + ((weights[index_0]-weights[index_i])/(2.*(P0-Pi).norm2()))*(Pi-P0);
+        Polygon result;
+        result.vertices.reserve(poly.vertices.size() + 1);
+        for (int i=0; i< poly.vertices.size(); i++){
+
+            Vector A = (i==0)? poly.vertices[poly.vertices.size()-1]:poly.vertices[i-1]; 
+            const Vector &B = poly.vertices[i];
+     
+            double t = dot(Mprime-A, Pi-P0)/dot(B-A, Pi-P0); 
+            Vector P = A+ t*(B-A); // Point of intersection?
+
+            if ((B - P0).norm2() -weights[index_0] < (B - Pi).norm2()-weights[index_i]){ // B is inside 
+                if ((A - P0).norm2() -weights[index_0] > (A - Pi).norm2()-weights[index_i]){ // A is outside 
+                    result.vertices.push_back(P);
+                }
+                result.vertices.push_back(B);
+            }
+            else if ((A - P0).norm2() -weights[index_0] < (A - Pi).norm2()-weights[index_i]){ // A is inside 
+               // if ((B - P0).norm2()-weights[index_0]  > (B - Pi).norm2()-weights[index_i]){ // B is outside 
+                result.vertices.push_back(P);
+                //}
+            }
+        }
+        return result;
+    }
+
+    Polygon compute_powerdiagram_cell(int idx){
+        
+        Polygon result; 
+        result.vertices.resize(4);
+        //powerdiagram restricted to the unit square between 0 and 1 
+        //clockwise direction
+        result.vertices[0] = Vector(0,0,0);
+        result.vertices[1] = Vector(1,0,0);
+        result.vertices[2] = Vector(1,1,0);
+        result.vertices[3] = Vector(0,1,0);
+
+        // we want to clip it by bisector
+        for (int i=0; i< points.size(); i++){
+            if (i==idx) continue;
+            result = clip_polygon_by_bissector(result,idx, i, points[idx], points[i]);
+        }
+
+        return result;
+    }
+    void compute(){ // compute polygon 
+        powerdiagram.resize(points.size());
+        for (int i=0; i< points.size(); i++){
+            powerdiagram[i] = compute_powerdiagram_cell(i);
+        }    
+    }
+    void save(std::string filename){
+        save_svg(powerdiagram,filename, "blue" );
+    }
+
+    std::vector<Vector> points; 
+    std::vector<double> weights; 
+    std::vector<Polygon> powerdiagram; 
+
+};
+
+class OT{
+public:
+    OT(const std::vector<Vector> &pts, const std::vector<double> &lambdas){
+        this->pts = pts;
+        this->lambdas=lambdas;
+    };
+
+    static lbfgsfloatval_t _evaluate(
+        void *instance,
+        const lbfgsfloatval_t *x,
+        lbfgsfloatval_t *g,
+        const int n,
+        const lbfgsfloatval_t step
+        )
+    {
+        return reinterpret_cast<OT*>(instance)->evaluate(x, g, n, step);
+    }
+
+    lbfgsfloatval_t evaluate(
+        const lbfgsfloatval_t *x,
+        lbfgsfloatval_t *g,
+        const int n,
+        const lbfgsfloatval_t step
+        )
+    {
+        lbfgsfloatval_t fx = 0.0;
+     
+        for (int i = 0;i < n;i++) {
+            solution.weights[i] = x[i];
+        }
+        solution.compute();
+
+        double s1 =0;
+        double s2 =0;
+        double s3 =0;
+
+        for (int i = 0;i < n;i++) {
+            // slide 32 its the function g (W)
+            //third term
+            double cell_area = solution.powerdiagram[i].area();
+            g[i]= -(lambdas[i] - cell_area);
+            s3 = s3 + lambdas[i]*x[i];
+            //second term 
+            s2 = s2 - (x[i]*cell_area);
+            //first term
+            s1 = s1 + solution.powerdiagram[i].integrate_squared_distance(solution.points[i]);
+
+        }
+        
+        fx  = s1+ s2 + s3;
+
+        return -fx;
+    }
+
+    static int _progress(
+        void *instance,
+        const lbfgsfloatval_t *x,
+        const lbfgsfloatval_t *g,
+        const lbfgsfloatval_t fx,
+        const lbfgsfloatval_t xnorm,
+        const lbfgsfloatval_t gnorm,
+        const lbfgsfloatval_t step,
+        int n,
+        int k,
+        int ls
+        )
+    {
+        return reinterpret_cast<OT*>(instance)->progress(x, g, fx, xnorm, gnorm, step, n, k, ls);
+    }
+
+    int progress(
+        const lbfgsfloatval_t *x,
+        const lbfgsfloatval_t *g,
+        const lbfgsfloatval_t fx,
+        const lbfgsfloatval_t xnorm,
+        const lbfgsfloatval_t gnorm,
+        const lbfgsfloatval_t step,
+        int n,
+        int k,
+        int ls
+        )
+    {
+        for (int i = 0;i < n;i++) {
+            solution.weights[i] = x[i];
+        }
+        solution.compute();
+
+        double max_diff=0;
+        for(int i=0; i< n; i++){
+            double current_area = solution.powerdiagram[i].area();
+            double desired_area = lambdas[i];
+            max_diff = std::max(max_diff, std::abs(current_area-desired_area));
+        }
+
+        std::cout<<"fx:"<< fx<<"\tmax difference = "<< max_diff<<"\t gnorm"<< gnorm <<std::endl;
+
+        return 0;
+    }
+
+
+    void solve(){
+        //optimal transport problem solution 
+        solution.points = pts;
+        solution.weights.resize(pts.size()); 
+        std::fill(solution.weights.begin(), solution.weights.end(), 1.0);
+
+        double fx =0;
+        // LBFGS... copied from sample.cpp 
+        int ret = lbfgs(pts.size(), &solution.weights[0], &fx, _evaluate, _progress, this, NULL);
+        solution.compute();
+
+    }
+
+    std::vector<Vector> pts;
+    std::vector<double> lambdas;
+    PowerDiagram solution;
+
+
+};
+
+
+int main(){
+    //powerdiagram1 - 30 
+    //powerdiagram2 - 1024
+    //powerdiagram3 - 256
+    //powerdiagram4 - debut td 7 
+
+    std::vector<Vector> points(32); 
+    std::vector<double> lambdas(32); 
+    for (int i=0; i< points.size(); i++){
+        points[i][0] = rand()/ (double)RAND_MAX;
+        points[i][1] = rand()/ (double)RAND_MAX;
+        points[i][2] = 0;
+        //weights[i] = 1; //powerdiagram4
+        //weights[i] = rand()/ (double)RAND_MAX; //powerdiagram5
+        lambdas[i] = 1./ points.size(); //powerdiagram6 with size 32 
+    }
+    OT ot(points, lambdas);
+    auto start = std::chrono::high_resolution_clock::now();
+    ot.solve();
+    auto stop = std::chrono::high_resolution_clock::now();
+    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(stop - start);
+    std::cout<<"duration = "<< duration.count() <<std::endl;
+    ot.solution.save("powerdiagram5.svg");
+    return 0;
+}
+
+// TD7:
+// 1. Power diagrams:
+// -> adjusting formulas and adding weights P and inside 
+// 2. libLBFGS library moodle page for optimization
+// 3. Optimal transport probleme:
+// -> add libLBFGS library to the project
+// -> implement evaluate function that computer the objetive function + gradient
+ 
+
