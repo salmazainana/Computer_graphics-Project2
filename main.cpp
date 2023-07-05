@@ -25,9 +25,9 @@ public:
         if (vertices.size()<3) return 0; // not a polygon (not enough vertices)
         double result = 0;
         for (int i=0; i< vertices.size(); i++){
-            const Vector &A = vertices[i];
-            const Vector &B = vertices[(i+1)%vertices.size()];
-            result += A[0]*B[1] - A[1]*B[0];
+            //Vector A = vertices[i];
+            //Vector B = vertices[(i+1)%vertices.size()];
+            result += vertices[i][0]*vertices[(i+1)%vertices.size()][1] - vertices[i][1]*vertices[(i+1)%vertices.size()][0];
         }
         return std::abs(result/2);
     }
@@ -93,7 +93,7 @@ int sgn(double x) {
 }
 
 void save_frame(const std::vector<Polygon> &cells, std::string filename, int frameid = 0) {
-    int W = 1000, H = 1000;
+    int W = 500, H = 500;
     std::vector<unsigned char> image(W*H * 3, 255);
 // #pragma omp parallel for schedule(dynamic)
     for (int i = 0; i < cells.size(); i++) {
@@ -136,19 +136,17 @@ void save_frame(const std::vector<Polygon> &cells, std::string filename, int fra
                     mindistEdge = std::min(mindistEdge, distEdge);
                 }
                 if (isInside) { // want the cells blue
-                    //if (i < N) {   // the N first particles may represent fluid, displayed in blue
-                    //  image[((H - y - 1)*W + x) * 3] = 0;
-                    //  image[((H - y - 1)*W + x) * 3 + 1] = 0;
-                    //  image[((H - y - 1)*W + x) * 3 + 2] = 255;
-                    //}
+                //   // the N first particles may represent fluid, displayed in blue
+                //      image[((H - y - 1)*W + x) * 3] = 0;
+                //      image[((H - y - 1)*W + x) * 3 + 1] = 0;
+                //      image[((H - y - 1)*W + x) * 3 + 2] = 255;
+                
                     if (mindistEdge <= 2) {
                         image[((H - y - 1)*W + x) * 3] = 0;
                         image[((H - y - 1)*W + x) * 3 + 1] = 0;
                         image[((H - y - 1)*W + x) * 3 + 2] = 0;
                     }
-
                 }
-                
             }
         }
     }
@@ -172,7 +170,6 @@ public:
     };
 
     Polygon disk; 
-
     PowerDiagram(const std::vector<Vector>& pts, const std::vector<double> &weights){
         points = pts; 
         this->weights = weights;
@@ -180,12 +177,14 @@ public:
         disk.vertices.resize(N_disk);
 
         for (int i=0; i< N_disk; i++){
-            double t = i / (double)N_disk*M_PI*2;
-            disk.vertices[i] = Vector(cos(t), sin(t), 0);
+            double t = i / (double)N_disk*M_PI;
+            disk.vertices[i][0] = cos(t);
+            disk.vertices[i][1] = sin(t);
+            disk.vertices[i][2] = 0;
         }
     }
 
-    Polygon clip_polygon_by_bissector(const Polygon& poly,int index_0, int index_i, const Vector& P0, const Vector& Pi){
+    Polygon clip_polygon_by_bissector(const Polygon& poly,int index_0, int index_i, const Vector& P0, const Vector& Pi) const{
         //Sutherland Hodgman algorithm 
         // to check if its inside outside or in between 
 
@@ -195,7 +194,7 @@ public:
         result.vertices.reserve(poly.vertices.size() + 1);
         for (int i=0; i< poly.vertices.size(); i++){
 
-            const Vector A = (i==0)? poly.vertices[poly.vertices.size()-1]:poly.vertices[i-1]; 
+            const Vector &A = (i==0)? poly.vertices[poly.vertices.size()-1]:poly.vertices[i-1]; 
             const Vector &B = poly.vertices[i];
      
             double t = dot(Mprime-A, Pi-P0)/dot(B-A, Pi-P0); 
@@ -241,7 +240,7 @@ public:
         return result;
     }
 
-    Polygon intersect_with_disk(const Polygon& polygon, const Vector& center, double radius) {
+    Polygon intersect_with_disk(const Polygon& polygon, const Vector& center, double radius) const {
         Polygon result(polygon);
         for (int i=0; i<disk.vertices.size(); i++) {
             const Vector& u = disk.vertices[i]*radius + center; 
@@ -281,15 +280,11 @@ public:
     void save(std::string filename){
         save_svg(powerdiagram,filename, "blue" );
     }
-
     std::vector<Polygon> powerdiagram;
     std::vector<Vector> points;
-    std::vector<Vector> velocities;
     std::vector<double> weights;
 
 };
-
-
 
 class OT{
 public:
@@ -321,7 +316,7 @@ public:
     {
         lbfgsfloatval_t fx = 0.0;
      
-        for (int i = 0;i < n;i++) {
+        for (int i = 0;i < n-1;i++) {
             solution.weights[i] = x[i];
         }
         solution.compute();
@@ -331,7 +326,7 @@ public:
         double s3 =0;
         double estimated_volume_fluid = 0;
 
-        for (int i = 0;i < n;i++) {
+        for (int i = 0;i < n+1;i++) {
             // slide 32 its the function g (W)
             //third term
             double cell_area = solution.powerdiagram[i].area();
@@ -351,8 +346,8 @@ public:
 
         //Rest of formula for fluid 
 
-        fx += x[n-1]*(VOLUME_AIR - estimated_volume_air);
-        g[n-1]= -(VOLUME_AIR - estimated_volume_air);
+        fx += x[n+1]*(VOLUME_AIR - estimated_volume_air);
+        g[n+1]= -(VOLUME_AIR - estimated_volume_air);
 
         return -fx;
     }
@@ -385,13 +380,13 @@ public:
         int ls
         )
     {
-        for (int i = 0;i < n;i++) {
+        for (int i = 0;i < n-1;i++) {
             solution.weights[i] = x[i];
         }
         solution.compute();
 
         double max_diff=0;
-        for(int i=0; i< n; i++){
+        for(int i=0; i< n-1; i++){
             double current_area = solution.powerdiagram[i].area();
             double desired_area = lambdas[i];
             max_diff = std::max(max_diff, std::abs(current_area-desired_area));
@@ -406,12 +401,13 @@ public:
     void solve(){
         //optimal transport problem solution 
         solution.points = pts;
-        solution.weights.resize(pts.size()); 
+        solution.weights.resize(pts.size()+1); 
         std::fill(solution.weights.begin(), solution.weights.end(), 1.0);
+        solution.weights[solution.weights.size()-1] = 0.7; 
 
         double fx =0;
         // LBFGS... copied from sample.cpp 
-        int ret = lbfgs(pts.size(), &solution.weights[0], &fx, _evaluate, _progress, this, NULL);
+        int ret = lbfgs(pts.size()+1, &solution.weights[0], &fx, _evaluate, _progress, this, NULL);
         solution.compute();
 
     }
@@ -425,19 +421,24 @@ public:
 
 class Fluid {
 public:
+    Fluid(){};
+
     Fluid(int N){
         particles.resize(N);
         for (int i=0; i<N; i++) {
-            particles[i] = Vector(rand()/(double)RAND_MAX, rand()/(double)RAND_MAX, rand()/(double)RAND_MAX);
+            particles[i] = Vector(rand()/(double)RAND_MAX, rand()/(double)RAND_MAX);
         }
         velocities.resize(N, Vector(0, 0, 0));
     }
+
     void stepFluid() {
+
         otsolver.pts = particles;
-        otsolver.lambdas = std::vector<double>(particles.size(), 1/particles.size() * VOLUME_FLUID);
+        otsolver.lambdas = std::vector<double>(particles.size(), 1./particles.size() * VOLUME_FLUID);
         otsolver.solve();
-        double mass_particle = 200;
-        double epsilon2 = 0.004*0.004;
+
+        const double mass_particle = 200;
+        const double epsilon2 = 0.004*0.004;
         const double dt = 0.002;
 
         for (int i=0; i<particles.size(); i++) {
@@ -449,12 +450,14 @@ public:
             particles[i] += dt * velocities[i];
         }
     }
+
     void runFluid() {
         for (int i=0; i < 1000; i++) {
             stepFluid();
-            if (i==999) save_frame(otsolver.solution.powerdiagram, "animation", i);
+            save_frame(otsolver.solution.powerdiagram, "animation", i);
         }
     }
+
     OT otsolver;
     std::vector<Vector> points;
     std::vector<Vector> velocities;
@@ -467,33 +470,32 @@ int main() {
     Fluid fluid(10);
     fluid.runFluid();
     exit(0);
+    std::vector<Vector> points(32); 
+    std::vector<double> lambdas(32); 
+    //powerdiagram1 - 30 
+    //powerdiagram2 - 1024
+    //powerdiagram3 - 256
+    //powerdiagram4 - debut td 7 
 
+    //std::vector<Vector> points(32); 
+    //std::vector<double> lambdas(32); 
+    for (int i=0; i< points.size(); i++){
+        points[i][0] = rand()/ (double)RAND_MAX;
+        points[i][1] = rand()/ (double)RAND_MAX;
+        points[i][2] = 0;
+        //weights[i] = 1; //powerdiagram4
+        //weights[i] = rand()/ (double)RAND_MAX; //powerdiagram5
+        lambdas[i] = 1./ points.size(); //powerdiagram6 with size 32 
+    }
+    OT ot(points, lambdas);
+    auto start = std::chrono::high_resolution_clock::now();
+    ot.solve();
+    auto stop = std::chrono::high_resolution_clock::now();
+    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(stop - start);
+    std::cout<<"duration = "<< duration.count() <<std::endl;
+    ot.solution.save("powerdiagram5.svg");
+    return 0;
 }
-// int main(){
-//     //powerdiagram1 - 30 
-//     //powerdiagram2 - 1024
-//     //powerdiagram3 - 256
-//     //powerdiagram4 - debut td 7 
-
-//     std::vector<Vector> points(32); 
-//     std::vector<double> lambdas(32); 
-//     for (int i=0; i< points.size(); i++){
-//         points[i][0] = rand()/ (double)RAND_MAX;
-//         points[i][1] = rand()/ (double)RAND_MAX;
-//         points[i][2] = 0;
-//         //weights[i] = 1; //powerdiagram4
-//         //weights[i] = rand()/ (double)RAND_MAX; //powerdiagram5
-//         lambdas[i] = 1./ points.size(); //powerdiagram6 with size 32 
-//     }
-//     OT ot(points, lambdas);
-//     auto start = std::chrono::high_resolution_clock::now();
-//     ot.solve();
-//     auto stop = std::chrono::high_resolution_clock::now();
-//     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(stop - start);
-//     std::cout<<"duration = "<< duration.count() <<std::endl;
-//     ot.solution.save("powerdiagram5.svg");
-//     return 0;
-// }
 
 // TD7:
 // 1. Power diagrams:
